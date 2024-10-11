@@ -15,16 +15,11 @@
 #include <U8g2lib.h>  // For text on the OLED
 #include <FastLED.h>  // FastLED library for controlling LEDs
 #include <painlessMesh.h>  // Mesh networking library
-#include <WiFi.h>
 #include <iostream>
 #include <HardwareSerial.h>
 #include <ArduinoJson.h>
 #include <TaskScheduler.h>
 #include <math.h>
-
-// #include <inclusions.h>
-// #include <datum.h>
-// #include <file.h>
 
 // Constants for OLED and LEDs
 #define OLED_CLOCK  15          
@@ -82,7 +77,7 @@ Task taskSendMessage(TASK_SECOND * 10 , TASK_FOREVER, &sendMessage);
 
 String readingsToJSON () {
     for (int i = 0; i < 5; i++) {
-    jsonReadings[keys[i]] = datum[i];
+        jsonReadings[keys[i]] = datum[i];
     }
     
     serializeJson(jsonReadings, readings);
@@ -90,8 +85,8 @@ String readingsToJSON () {
 }
 
 void sendMessage () {
-  String msg = readingsToJSON();
-  mesh.sendBroadcast(msg);
+    String msg = readingsToJSON();
+    mesh.sendBroadcast(msg);
 }
 
 // Needed for painless library
@@ -120,7 +115,6 @@ void receivedCallback( uint32_t from, String &msg ) {
     
     for (int i = 0; i < 5; i++) {    
         datum[i] = jsonReadings[keys[i]].as<String>();
-        // datum[i] = String(datum[i].toInt() + jsonReadings[keys[i]].as<int>());
         Serial.print(keys[i]);
         Serial.print(": ");
         Serial.print(datum[i]);
@@ -130,7 +124,6 @@ void receivedCallback( uint32_t from, String &msg ) {
 
     displayMessages();
 }
-
 
 void newConnectionCallback(uint32_t nodeId) {
     Serial.printf("--> startHere: New Connection, nodeId = %u\n", nodeId);
@@ -162,7 +155,6 @@ void setup() {
     FastLED.setMaxPowerInMilliWatts(g_PowerLimit);
 
     mesh.setDebugMsgTypes( ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE ); // all types on
-    // mesh.setDebugMsgTypes( ERROR | STARTUP );  // set before init() so that you can see startup messages
 
     // Initialize painlessMesh
     mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
