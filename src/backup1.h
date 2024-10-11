@@ -15,12 +15,16 @@
 #include <U8g2lib.h>  // For text on the OLED
 #include <FastLED.h>  // FastLED library for controlling LEDs
 #include <painlessMesh.h>  // Mesh networking library
-#include <WiFi.h>  // For Wi-Fi connectivity
-#include <WebServer.h>  // Simple web server for monitoring
+#include <WiFi.h>
+#include <iostream>
 #include <HardwareSerial.h>
 #include <ArduinoJson.h>
 #include <TaskScheduler.h>
 #include <math.h>
+
+// #include <inclusions.h>
+// #include <datum.h>
+// #include <file.h>
 
 // Constants for OLED and LEDs
 #define OLED_CLOCK  15          
@@ -35,13 +39,6 @@ CRGB g_LEDs[NUM_LEDS] = {0};  // Frame buffer for FastLED
 #define MESH_PREFIX "esp32_mesh"
 #define MESH_PASSWORD "mesh_password"
 #define MESH_PORT 5555
-
-// Wi-Fi credentials
-const char* ssid = "your_SSID";  // Replace with your Wi-Fi network name
-const char* password = "your_password";  // Replace with your Wi-Fi password
-
-// Web server object
-WebServer server(80);
 
 // OLED Display object
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
@@ -77,37 +74,41 @@ void displayMessages() {
 }
 
 // User stub
-void sendMessage();  // Prototype so PlatformIO doesn't complain
-String getReadings();  // Prototype for sending sensor readings
+void sendMessage() ; // Prototype so PlatformIO doesn't complain
+String getReadings(); // Prototype for sending sensor readings
 
 // Periodic task to send a message
-Task taskSendMessage(TASK_SECOND * 10, TASK_FOREVER, &sendMessage);
+Task taskSendMessage(TASK_SECOND * 10 , TASK_FOREVER, &sendMessage);
 
-String readingsToJSON() {
+String readingsToJSON () {
     for (int i = 0; i < 5; i++) {
-        jsonReadings[keys[i]] = datum[i];
+    jsonReadings[keys[i]] = datum[i];
     }
     
     serializeJson(jsonReadings, readings);
     return readings;
 }
 
-void sendMessage() {
-    String msg = readingsToJSON();
-    mesh.sendBroadcast(msg);
+void sendMessage () {
+  String msg = readingsToJSON();
+  mesh.sendBroadcast(msg);
 }
 
 // Needed for painless library
-void receivedCallback(uint32_t from, String &msg) {
+void receivedCallback( uint32_t from, String &msg ) {
+    // Ignore messages from this node itself
     if (from == mesh.getNodeId()) {
-        return;  // Ignore message from self
+        return;  // Ignore message
     }
 
     Serial.printf("Received from %u msg=%s\n", from, msg.c_str());
     
+    // JSON input string.
     const char* json = msg.c_str();
+    // Deserialize the JSON document
     DeserializationError error = deserializeJson(jsonReadings, json);
 
+    // Test if parsing succeeds.
     if (error) {
         Serial.print(F("deserializeJson() failed: "));
         Serial.println(error.f_str());
@@ -117,8 +118,9 @@ void receivedCallback(uint32_t from, String &msg) {
     Serial.print("Node: ");
     Serial.println(from);
     
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 5; i++) {    
         datum[i] = jsonReadings[keys[i]].as<String>();
+        // datum[i] = String(datum[i].toInt() + jsonReadings[keys[i]].as<int>());
         Serial.print(keys[i]);
         Serial.print(": ");
         Serial.print(datum[i]);
@@ -129,35 +131,6 @@ void receivedCallback(uint32_t from, String &msg) {
     displayMessages();
 }
 
-// Wi-Fi initialization and web server setup
-void setupWiFi() {
-    Serial.print("Connecting to Wi-Fi...");
-    WiFi.begin(ssid, password);
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(1000);
-        Serial.print(".");
-    }
-    Serial.println("Wi-Fi connected!");
-    Serial.println("IP Address: ");
-    Serial.println(WiFi.localIP());
-}
-
-void handleRoot() {
-    String html = "<html><head><title>Mesh Network Monitor</title></head><body>";
-    html += "<h1>Sensor Readings</h1><ul>";
-    for (int i = 0; i < 5; i++) {
-        html += "<li>" + String(keys[i]) + ": " + datum[i] + " " + suf[i] + "</li>";
-    }
-    html += "</ul></body></html>";
-    server.send(200, "text/html", html);
-}
-
-void startWebServer() {
-    server.on("/", handleRoot);  // Serve web page at the root
-    server.begin();  // Start the server
-    Serial.println("Web server started!");
-}
 
 void newConnectionCallback(uint32_t nodeId) {
     Serial.printf("--> startHere: New Connection, nodeId = %u\n", nodeId);
@@ -168,7 +141,7 @@ void changedConnectionCallback() {
 }
 
 void nodeTimeAdjustedCallback(int32_t offset) {
-    Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(), offset);
+    Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(),offset);
 }
 
 void setup() {
@@ -188,16 +161,14 @@ void setup() {
     FastLED.setBrightness(g_Brightness);
     FastLED.setMaxPowerInMilliWatts(g_PowerLimit);
 
-    // Initialize Wi-Fi and web server
-    setupWiFi();
-    startWebServer();
+    mesh.setDebugMsgTypes( ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE ); // all types on
+    // mesh.setDebugMsgTypes( ERROR | STARTUP );  // set before init() so that you can see startup messages
 
     // Initialize painlessMesh
     mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
-    mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
 
-    // Set the mesh callbacks
-    mesh.onReceive(&receivedCallback);
+    // Assign all the callback functions to their corresponding events.
+    mesh.onReceive(&receivedCallback);  // Set the callback for receiving messages
     mesh.onNewConnection(&newConnectionCallback);
     mesh.onChangedConnections(&changedConnectionCallback);
     mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
@@ -211,7 +182,4 @@ void setup() {
 void loop() {
     // Keep the mesh network alive
     mesh.update();
-
-    // Handle web server requests
-    server.handleClient();
 }
