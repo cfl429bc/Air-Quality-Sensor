@@ -46,6 +46,11 @@ int serverPort = 5555; // My server Port
 
 // Web server object
 WebServer server(serverPort);
+// Variables for tracking connection status
+bool wifiConnected = false;
+unsigned long lastReconnectAttempt = 0;
+unsigned long reconnectInterval = 5000;  // Start with 5 seconds between reconnection attempts
+
 // Extensions
 String links[2] = {"/", "/api/readings"};
 
@@ -95,6 +100,25 @@ void displayMac() {
             g_OLED.printf("Node Id: ");
         } else if (i == 3) {
             g_OLED.printf("1");  // Placeholder for node ID (can be dynamic)
+        }
+    }
+    g_OLED.sendBuffer();  // Send the updated buffer to the OLED
+}
+
+void displayLinks() {
+    g_OLED.clearBuffer();  // Clear the screen
+    for (int i = 0; i < 5; i++) {
+        g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
+        if (i == 0) {
+            g_OLED.println("Wi-Fi connected!");
+        } else if (i == 1) {
+            g_OLED.print("IP Address: ");
+        } else if (i == 2) {
+            g_OLED.println(WiFi.localIP());  // Print the IP address once connected
+        } else if (i == 3) {
+            g_OLED.print("Port: ");
+        } else if (i == 4) {
+            g_OLED.println(serverPort);  // Print the port number
         }
     }
     g_OLED.sendBuffer();  // Send the updated buffer to the OLED
@@ -169,50 +193,6 @@ void receivedCallback(uint32_t from, String &msg) {
     displayMessages();
 }
 
-// Function to initialize Wi-Fi and connect to the WPA2 Enterprise network
-void setupWiFi() {
-    Serial.print("Connecting to Wi-Fi...");
-
-    WiFi.disconnect(true);  // Disconnect from any previous connections
-    WiFi.mode(WIFI_STA);  // Set Wi-Fi to Station mode
-
-    // WPA2 Enterprise setup
-    esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));  // Set identity (username)
-    esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));  // Set username (same as identity)
-    esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));  // Set password
-    esp_wifi_sta_wpa2_ent_enable();  // Enable WPA2 Enterprise authentication
-    WiFi.begin(ssid);  // Connect to the specified SSID
-
-    // Wait for the Wi-Fi connection to establish
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    Serial.println("Wi-Fi connected!");
-    generateLinks();
-    // Serial.printf("http://%s:%s/api/readings", WiFi.localIP(), serverPort);
-}
-
-void displayServer() {
-    g_OLED.clearBuffer();  // Clear the screen
-    for (int i = 0; i < 5; i++) {
-        g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
-        if (i == 0) {
-            g_OLED.println("Wi-Fi connected!");
-        } else if (i == 1) {
-            g_OLED.print("IP Address: ");
-        } else if (i == 2) {
-            g_OLED.println(WiFi.localIP());  // Print the IP address once connected
-        } else if (i == 3) {
-            g_OLED.print("Port: ");
-        } else if (i == 4) {
-            g_OLED.println(serverPort);  // Print the port number
-        }
-    }
-    g_OLED.sendBuffer();  // Send the updated buffer to the OLED
-}
-
 // Handler for the root URL of the web server
 void handleRoot() {
     Serial.println("Handling root request");  // Add this for debugging
@@ -242,6 +222,84 @@ void startWebServer() {
     server.on("/api/readings", handleJson);  // Serve JSON at /api/readings
     server.begin();  // Start the web server
     Serial.println("Web server started!");
+}
+
+// Function to stop the web server
+void stopWebServer() {
+    server.stop();  // Stop the server
+    Serial.println("Web server stopped.");
+}
+
+// Function to reconnect to Wi-Fi with exponential backoff
+void reconnectWiFi() {
+    unsigned long now = millis();
+    
+    // Only attempt reconnection if the reconnect interval has passed
+    if (now - lastReconnectAttempt > reconnectInterval) {
+        Serial.print("Reconnecting to Wi-Fi...");
+        
+        // Attempt to reconnect
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_STA);
+        
+        // WPA2 Enterprise setup
+        esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
+        esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
+        esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+        esp_wifi_sta_wpa2_ent_enable();
+        WiFi.begin(ssid);
+
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+            delay(500);
+            Serial.print(".");
+            attempts++;
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nWi-Fi reconnected!");
+            wifiConnected = true;  // Set the connection status to true
+            startWebServer();  // Restart the web server
+        } else {
+            Serial.println("\nReconnection failed. Retrying...");
+            wifiConnected = false;
+            reconnectInterval = min(reconnectInterval * 2, 60000UL);  // Exponential backoff (max 60 seconds)
+        }
+        lastReconnectAttempt = now;  // Update the last attempt time
+    }
+}
+
+// Function to initialize Wi-Fi and connect to the WPA2 Enterprise network
+void setupWiFi() {
+    Serial.print("Connecting to Wi-Fi...");
+
+    WiFi.disconnect(true);  // Ensure a clean start
+    WiFi.mode(WIFI_STA);  // Set Wi-Fi to station mode
+
+    // WPA2 Enterprise setup
+    esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
+    esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
+    esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+    esp_wifi_sta_wpa2_ent_enable();
+    WiFi.begin(ssid);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWi-Fi connected!");
+        wifiConnected = true;
+        startWebServer();  // Start the web server after successful connection
+        generateLinks();
+        displayLinks();
+    } else {
+        Serial.println("\nFailed to connect to Wi-Fi");
+        wifiConnected = false;
+    }
 }
 
 // Mesh event callbacks
@@ -281,9 +339,7 @@ void setup() {
 
     // Initialize Wi-Fi and start the web server
     setupWiFi();
-    startWebServer();
-    displayServer();
-
+    
     // // Initialize mesh network
     // mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
     // mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
@@ -303,7 +359,18 @@ void setup() {
 
 // Main loop to keep the mesh network and web server alive
 void loop() {
+    if (WiFi.status() != WL_CONNECTED) {
+        // If Wi-Fi is disconnected, stop the server and attempt reconnection
+        if (wifiConnected) {
+            Serial.println("Wi-Fi disconnected. Stopping web server...");
+            stopWebServer();
+            wifiConnected = false;
+        }
+        reconnectWiFi();  // Attempt reconnection
+    } else {
+        // If connected, handle web server requests normally
+        server.handleClient();
+    }
     // mesh.update();  // Update mesh network status
-    server.handleClient();  // Handle web server requests
     // displayMessages();  // Continuously update the OLED display
 }
