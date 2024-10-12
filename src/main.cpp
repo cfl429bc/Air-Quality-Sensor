@@ -46,6 +46,8 @@ int serverPort = 8080; // My server Port
 
 // Web server object
 WebServer server(serverPort);
+// Extensions
+String links[2] = {"/", "/api/readings"};
 
 // OLED Display object
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
@@ -92,7 +94,7 @@ void displayMac() {
         } else if (i == 2) {
             g_OLED.printf("Node Id: ");
         } else if (i == 3) {
-            g_OLED.printf("1");  // Placeholder for node ID (can be dynamic)
+            g_OLED.printf("2");  // Placeholder for node ID (can be dynamic)
         }
     }
     g_OLED.sendBuffer();  // Send the updated buffer to the OLED
@@ -101,6 +103,16 @@ void displayMac() {
 // User stub
 void sendMessage();  // Prototype for message sending
 String getReadings();  // Prototype for fetching sensor readings
+
+// Set up generateLinks
+void generateLinks() {
+    for (int i = 0; i < (sizeof(links) / sizeof(links[0])); i++) {
+        Serial.printf("http://");
+        Serial.print(WiFi.localIP());
+        Serial.print(":" + String(serverPort));
+        Serial.println(links[i]);
+    }
+}
 
 // Periodic task to send a message every 10 seconds
 Task taskSendMessage(TASK_SECOND * 10, TASK_FOREVER, &sendMessage);
@@ -174,10 +186,12 @@ void setupWiFi() {
     }
 
     Serial.println("Wi-Fi connected!");
-    Serial.println("IP Address: ");
+    Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());  // Print the IP address once connected
-    Serial.println("Port: ");
+    Serial.print("Port: ");
     Serial.println(serverPort);  // Print the port number
+    generateLinks();
+    // Serial.printf("http://%s:%s/api/readings", WiFi.localIP(), serverPort);
 }
 
 // Handler for the root URL of the web server
