@@ -42,7 +42,7 @@ CRGB g_LEDs[NUM_LEDS] = {5};  // Frame buffer for FastLED
 const char* ssid = "eduroam";  // Your Wi-Fi SSID
 const char* identity = "londal@bc.edu";    // Your network username
 const char* password = "Chris21bc";    // Your network password
-int serverPort = 8080; // My server Port
+int serverPort = 5555; // My server Port
 
 // Web server object
 WebServer server(serverPort);
@@ -94,7 +94,7 @@ void displayMac() {
         } else if (i == 2) {
             g_OLED.printf("Node Id: ");
         } else if (i == 3) {
-            g_OLED.printf("2");  // Placeholder for node ID (can be dynamic)
+            g_OLED.printf("1");  // Placeholder for node ID (can be dynamic)
         }
     }
     g_OLED.sendBuffer();  // Send the updated buffer to the OLED
@@ -130,6 +130,10 @@ String readingsToJSON() {
 void sendMessage() {
     String msg = readingsToJSON();  // Convert readings to JSON
     mesh.sendBroadcast(msg);  // Broadcast the JSON readings to all mesh nodes
+}
+
+void initializeMesh() {
+    
 }
 
 // Mesh network callback function for receiving messages
@@ -186,16 +190,32 @@ void setupWiFi() {
     }
 
     Serial.println("Wi-Fi connected!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());  // Print the IP address once connected
-    Serial.print("Port: ");
-    Serial.println(serverPort);  // Print the port number
     generateLinks();
     // Serial.printf("http://%s:%s/api/readings", WiFi.localIP(), serverPort);
 }
 
+void displayServer() {
+    g_OLED.clearBuffer();  // Clear the screen
+    for (int i = 0; i < 5; i++) {
+        g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
+        if (i == 0) {
+            g_OLED.println("Wi-Fi connected!");
+        } else if (i == 1) {
+            g_OLED.print("IP Address: ");
+        } else if (i == 2) {
+            g_OLED.println(WiFi.localIP());  // Print the IP address once connected
+        } else if (i == 3) {
+            g_OLED.print("Port: ");
+        } else if (i == 4) {
+            g_OLED.println(serverPort);  // Print the port number
+        }
+    }
+    g_OLED.sendBuffer();  // Send the updated buffer to the OLED
+}
+
 // Handler for the root URL of the web server
 void handleRoot() {
+    Serial.println("Handling root request");  // Add this for debugging
     String html = "<html><head><title>Mesh Network Monitor</title>";
     html += "<meta http-equiv=\"refresh\" content=\"30\">";  // Auto-refresh the page every 30 seconds
     html += "</head><body><h1>Sensor Readings</h1><ul>";
@@ -209,6 +229,7 @@ void handleRoot() {
 
 // Handler for the /api/readings URL, which serves JSON data
 void handleJson() {
+    Serial.println("Handling JSON request");  // Add this for debugging
     String jsonOutput;
     readingsToJSON();  // Convert readings to JSON
     serializeJson(jsonReadings, jsonOutput);  // Serialize the JSON object into a string
@@ -240,7 +261,7 @@ void nodeTimeAdjustedCallback(int32_t offset) {
 void setup() {
     // Serial for debugging
     Serial.begin(115200);
-    delay(5000);  // Wait for Serial monitor to start
+    delay(5000);  // Wait 5 seconds for Serial monitor to start
 
     while (!Serial) { }
 
@@ -261,29 +282,28 @@ void setup() {
     // Initialize Wi-Fi and start the web server
     setupWiFi();
     startWebServer();
+    displayServer();
 
-    // Initialize mesh network
-    mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
-    mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
-    // mesh.setDebugMsgTypes(ERROR | COMMUNICATION | STARTUP);  // Set debug message types
+    // // Initialize mesh network
+    // mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
+    // mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
+    // // mesh.setDebugMsgTypes(ERROR | COMMUNICATION | STARTUP);  // Set debug message types
     
-    // Set mesh event callbacks
-    mesh.onReceive(&receivedCallback);
-    mesh.onNewConnection(&newConnectionCallback);
-    mesh.onChangedConnections(&changedConnectionCallback);
-    mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
+    // // Set mesh event callbacks
+    // mesh.onReceive(&receivedCallback);
+    // mesh.onNewConnection(&newConnectionCallback);
+    // mesh.onChangedConnections(&changedConnectionCallback);
+    // mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
 
-    // Schedule the task to send messages every 10 seconds
-    userScheduler.addTask(taskSendMessage);
-    taskSendMessage.enable();
+    // // Schedule the task to send messages every 10 seconds
+    // userScheduler.addTask(taskSendMessage);
+    // taskSendMessage.enable();
 
-    // Display initial messages on the OLED screen
-    displayMessages();
 }
 
 // Main loop to keep the mesh network and web server alive
 void loop() {
-    mesh.update();  // Update mesh network status
+    // mesh.update();  // Update mesh network status
     server.handleClient();  // Handle web server requests
-    displayMessages();  // Continuously update the OLED display
+    // displayMessages();  // Continuously update the OLED display
 }
