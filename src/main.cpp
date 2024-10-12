@@ -42,7 +42,7 @@ CRGB g_LEDs[NUM_LEDS] = {5};  // Frame buffer for FastLED
 const char* ssid = "eduroam";  // Your Wi-Fi SSID
 const char* identity = "londal@bc.edu";    // Your network username
 const char* password = "Chris21bc";    // Your network password
-int serverPort = 5555; // My server Port
+int serverPort = 8080; // My server Port
 
 // Web server object
 WebServer server(serverPort);
