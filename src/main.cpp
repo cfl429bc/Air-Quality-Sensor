@@ -1,163 +1,103 @@
-//+--------------------------------------------------------------------------
-//
-// Air Quality Monitor - (c) 2024 Chris Londal.  All Rights Reserved.
-//
-// File:        main.cpp
-//
-// Description:
-//
-//   Code for air quality sensor
-//
-// History:     Sep-30-2024     cfl429      Created
-//---------------------------------------------------------------------------
-
 #include <Arduino.h>
-#include <U8g2lib.h>  // For text on the OLED
-#include <FastLED.h>  // FastLED library for controlling LEDs
-#include <painlessMesh.h>  // Mesh networking library
-#include <WiFi.h>  // For Wi-Fi connectivity
-#include <WebServer.h>  // Simple web server for monitoring
-#include <HardwareSerial.h>
-#include <ArduinoJson.h>  // JSON parsing for sensor data
-#include <TaskScheduler.h>  // Task scheduling library
-#include <math.h>
-#include <esp_wpa2.h>  // For WPA2 Enterprise networks
-
+#include <painlessMesh.h>
+#include <FastLED.h>
+#include <U8g2lib.h>
+#include <TaskScheduler.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <map>
 
 // Constants for OLED and LEDs
 #define OLED_CLOCK  15          
 #define OLED_DATA   4
 #define OLED_RESET  16
 #define LED_PIN     5
-#define NUM_LEDS    48
+#define NUM_LEDS    5  // Updated number of LEDs
 
-CRGB g_LEDs[NUM_LEDS] = {5};  // Frame buffer for FastLED
+// LED configuration
+CRGB g_LEDs[NUM_LEDS] = {0};  // Updated frame buffer for FastLED
 
 // Mesh network settings
 #define MESH_PREFIX "esp32_mesh"
 #define MESH_PASSWORD "mesh_password"
 #define MESH_PORT 5555
 
-// Wi-Fi credentials
-const char* ssid = "eduroam";  // Your Wi-Fi SSID
-const char* identity = "londal@bc.edu";    // Your network username
-const char* password = "Chris21bc";    // Your network password
-int serverPort = 8080; // My server Port
-
-// Web server object
-WebServer server(serverPort);
-// Variables for tracking connection status
-bool wifiConnected = false;
-unsigned long lastReconnectAttempt = 0;
-unsigned long reconnectInterval = 5000;  // Start with 5 seconds between reconnection attempts
-
-// Extensions
-String links[2] = {"/", "/api/readings"};
-
-// OLED Display object
+// OLED configuration
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
-int g_lineHeight = 0;
+int g_lineHeight = 0;  // Height for text lines on OLED
 int g_Brightness = 255;  // LED brightness scale
 int g_PowerLimit = 3000;  // Power Limit for LEDs in milliWatts
 
-// Variables to store the last 5 messages (air quality data)
-const char * keys[5] = {"PM 1.0", "PM 2.5", "PM 10.0", "Temperature", "Humidity"};  // Keys for the data_map (these match the data positions in datum)
-String datum[5] = {"2", "2", "2", "2", "2"};  // pm1.0, pm2.5, pm10.0, temp, hum
-String suf[5] = {"ppm", "ppm", "ppm", "F", "%"};  // pm1.0, pm2.5, pm10.0, temp, hum
-JsonDocument jsonReadings;  // JSON document to hold readings
+// Keys, data, and suffix arrays for sensor values
+String keys[5] = {"PM 1.0", "PM 2.5", "PM 10.0", "Temperature", "Humidity"};  // Keys for data
+String datum[5] = {"2", "2", "2", "2", "2"};  // pm1.0, pm2.5, pm10.0, temp, hum (placeholder values)
+String suf[5] = {"ppm", "ppm", "ppm", "F", "%"};  // Suffixes for readings
 
-//String to send to other nodes with sensor readings
-String readings;
+// Mesh network object
+Scheduler userScheduler;
+painlessMesh mesh;
 
-Scheduler userScheduler;  // Task scheduler for painlessMesh
-painlessMesh mesh;  // Mesh network object
+// User stub
+void sendMessage();
 
-// PMS7003 Serial Communication
-HardwareSerial pmsSerial(2);  // Use Serial2 for PMS7003 (TX=17, RX=16)
-// PMS7003 Constants
-#define FRAME_LENGTH 32  // PMS7003 sends 32-byte data frame
+// Task Scheduler objects
+Task taskSendMessage(TASK_SECOND * 10, TASK_FOREVER, &sendMessage);
+
+// JSON handling
+StaticJsonDocument<1024> jsonReadings;
+
+// Map to store sensor data from other nodes
+std::map<uint32_t, String[5]> data_map;  // Map of node IDs to sensor data arrays
+
+// Function to convert sensor readings to JSON format
+String readingsToJSON() {
+    StaticJsonDocument<1024> doc;
+    
+    // Add this node's own data to the JSON
+    doc["nodeId"] = mesh.getNodeId();
+    JsonObject nodeData = doc.createNestedObject("data");
+    for (int i = 0; i < 5; i++) {
+        nodeData[keys[i]] = datum[i];
+    }
+    
+    // Add data from other nodes (from data_map)
+    JsonObject otherNodes = doc.createNestedObject("otherNodes");
+    for (auto const& entry : data_map) {
+        JsonObject node = otherNodes.createNestedObject(String(entry.first));
+        for (int i = 0; i < 5; i++) {
+            node[keys[i]] = entry.second[i];  // Add the data for each node
+        }
+    }
+    
+    String json;
+    serializeJson(doc, json);
+    Serial.println(json);
+    return json;
+}
 
 // Function to update the OLED with the last 5 messages
 void displayMessages() {
     g_OLED.clearBuffer();  // Clear the screen
     for (int i = 0; i < 5; i++) {
         g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
-        g_OLED.printf("%s: %s %s", keys[i], datum[i].c_str(), suf[i].c_str());
+        g_OLED.printf("%s: %s %s", keys[i].c_str(), datum[i].c_str(), suf[i].c_str());
     }
     g_OLED.sendBuffer();  // Send the updated buffer to the OLED
 }
 
-// Function to display the MAC address and node ID on the OLED screen
-void displayMac() {
-    g_OLED.clearBuffer();  // Clear the screen
-    for (int i = 0; i < 5; i++) {
-        g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
-        if (i == 0) {
-            g_OLED.printf("MAC Address: ");
-        } else if (i == 1) {
-            g_OLED.printf("%s", WiFi.macAddress().c_str());  // Display the MAC address
-        } else if (i == 2) {
-            g_OLED.printf("Node Id: ");
-        } else if (i == 3) {
-            g_OLED.printf("1");  // Placeholder for node ID (can be dynamic)
-        }
-    }
-    g_OLED.sendBuffer();  // Send the updated buffer to the OLED
-}
-
-void displayLinks() {
-    g_OLED.clearBuffer();  // Clear the screen
-    for (int i = 0; i < 5; i++) {
-        g_OLED.setCursor(0, g_lineHeight * (i + 1));  // Display each message on a new line
-        if (i == 0) {
-            g_OLED.println("Wi-Fi connected!");
-        } else if (i == 1) {
-            g_OLED.print("IP Address: ");
-        } else if (i == 2) {
-            g_OLED.println(WiFi.localIP());  // Print the IP address once connected
-        } else if (i == 3) {
-            g_OLED.print("Port: ");
-        } else if (i == 4) {
-            g_OLED.println(serverPort);  // Print the port number
-        }
-    }
-    g_OLED.sendBuffer();  // Send the updated buffer to the OLED
-}
-
-// User stub
-void sendMessage();  // Prototype for message sending
-String getReadings();  // Prototype for fetching sensor readings
-
-// Set up generateLinks
-void generateLinks() {
-    for (int i = 0; i < (sizeof(links) / sizeof(links[0])); i++) {
-        Serial.printf("http://");
-        Serial.print(WiFi.localIP());
-        Serial.print(":" + String(serverPort));
-        Serial.println(links[i]);
-    }
-}
-
-// Periodic task to send a message every 10 seconds
-Task taskSendMessage(TASK_SECOND * 10, TASK_FOREVER, &sendMessage);
-
-// Converts sensor readings to JSON format
-String readingsToJSON() {
-    for (int i = 0; i < 5; i++) {
-        jsonReadings[keys[i]] = datum[i];
-    }
-    serializeJson(jsonReadings, readings);  // Serialize the JSON object into a string
-    return readings;
-}
-
-// Sends the sensor readings as a broadcast to the mesh network
+// Sends the sensor readings as a message to each node in the mesh network
 void sendMessage() {
-    String msg = readingsToJSON();  // Convert readings to JSON
-    mesh.sendBroadcast(msg);  // Broadcast the JSON readings to all mesh nodes
-}
+    String msg = readingsToJSON();
 
-void initializeMesh() {
-    
+    // Get the list of connected nodes
+    std::list<uint32_t> nodes = mesh.getNodeList();
+
+    // Send the message to each node using sendSingle
+    for (auto nodeId : nodes) {
+        mesh.sendSingle(nodeId, msg);  // Send message to each connected node
+        Serial.printf("Sent message to node: %u\n", nodeId);
+    }
 }
 
 // Mesh network callback function for receiving messages
@@ -177,129 +117,25 @@ void receivedCallback(uint32_t from, String &msg) {
         return;
     }
 
-    Serial.print("Node: ");
-    Serial.println(from);  // Print the ID of the sender
-    
+    // Extract the node's sensor data and store it in the data_map
+    JsonObject nodeData = jsonReadings["data"];
     for (int i = 0; i < 5; i++) {
-        datum[i] = jsonReadings[keys[i]].as<String>();  // Update local data with received values
+        data_map[from][i] = nodeData[keys[i]].as<String>();  // Store the received data
+    }
+
+    // Print the received data
+    Serial.print("From: ");
+    Serial.println(from);
+    for (int i = 0; i < 5; i++) {
         Serial.print(keys[i]);
         Serial.print(": ");
-        Serial.print(datum[i]);
+        Serial.print(data_map[from][i]);
         Serial.print(" ");
         Serial.println(suf[i]);
     }
 
-    // Update the display with new readings
+    // Update the display with new readings from other nodes (if needed)
     displayMessages();
-}
-
-// Handler for the root URL of the web server
-void handleRoot() {
-    Serial.println("Handling root request");  // Add this for debugging
-    String html = "<html><head><title>Mesh Network Monitor</title>";
-    html += "<meta http-equiv=\"refresh\" content=\"30\">";  // Auto-refresh the page every 30 seconds
-    html += "</head><body><h1>Sensor Readings</h1><ul>";
-
-    for (int i = 0; i < 5; i++) {
-        html += "<li>" + String(keys[i]) + ": " + String(datum[i]) + " " + String(suf[i]) + "</li>";  // Display sensor readings
-    }
-    html += "<ul></body></html>";
-    server.send(200, "text/html", html);  // Send HTML to the client
-}
-
-// Handler for the /api/readings URL, which serves JSON data
-void handleJson() {
-    Serial.println("Handling JSON request");  // Add this for debugging
-    String jsonOutput;
-    readingsToJSON();  // Convert readings to JSON
-    serializeJson(jsonReadings, jsonOutput);  // Serialize the JSON object into a string
-    server.send(200, "application/json", jsonOutput);  // Send JSON to the client
-}
-
-// Start the web server and define the routes
-void startWebServer() {
-    server.on("/", handleRoot);  // Serve web page at the root URL
-    server.on("/api/readings", handleJson);  // Serve JSON at /api/readings
-    server.begin();  // Start the web server
-    Serial.println("Web server started!");
-}
-
-// Function to stop the web server
-void stopWebServer() {
-    server.stop();  // Stop the server
-    Serial.println("Web server stopped.");
-}
-
-// Function to reconnect to Wi-Fi with exponential backoff
-void reconnectWiFi() {
-    unsigned long now = millis();
-    
-    // Only attempt reconnection if the reconnect interval has passed
-    if (now - lastReconnectAttempt > reconnectInterval) {
-        Serial.print("Reconnecting to Wi-Fi...");
-        
-        // Attempt to reconnect
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_STA);
-        
-        // WPA2 Enterprise setup
-        esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
-        esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
-        esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
-        esp_wifi_sta_wpa2_ent_enable();
-        WiFi.begin(ssid);
-
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-            delay(500);
-            Serial.print(".");
-            attempts++;
-        }
-        
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\nWi-Fi reconnected!");
-            wifiConnected = true;  // Set the connection status to true
-            startWebServer();  // Restart the web server
-        } else {
-            Serial.println("\nReconnection failed. Retrying...");
-            wifiConnected = false;
-            reconnectInterval = min(reconnectInterval * 2, 60000UL);  // Exponential backoff (max 60 seconds)
-        }
-        lastReconnectAttempt = now;  // Update the last attempt time
-    }
-}
-
-// Function to initialize Wi-Fi and connect to the WPA2 Enterprise network
-void setupWiFi() {
-    Serial.print("Connecting to Wi-Fi...");
-
-    WiFi.disconnect(true);  // Ensure a clean start
-    WiFi.mode(WIFI_STA);  // Set Wi-Fi to station mode
-
-    // WPA2 Enterprise setup
-    esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
-    esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
-    esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
-    esp_wifi_sta_wpa2_ent_enable();
-    WiFi.begin(ssid);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWi-Fi connected!");
-        wifiConnected = true;
-        startWebServer();  // Start the web server after successful connection
-        generateLinks();
-        displayLinks();
-    } else {
-        Serial.println("\nFailed to connect to Wi-Fi");
-        wifiConnected = false;
-    }
 }
 
 // Mesh event callbacks
@@ -333,44 +169,23 @@ void setup() {
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(g_LEDs, NUM_LEDS);
     FastLED.setBrightness(g_Brightness);
     FastLED.setMaxPowerInMilliWatts(g_PowerLimit);
-
-    // Display MAC address on the OLED screen until connected to the network
-    displayMac();
-
-    // Initialize Wi-Fi and start the web server
-    setupWiFi();
     
-    // // Initialize mesh network
-    // mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
-    // mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
-    // // mesh.setDebugMsgTypes(ERROR | COMMUNICATION | STARTUP);  // Set debug message types
+    // Initialize mesh network
+    mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
+    mesh.setDebugMsgTypes(ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE);  // all types on
     
-    // // Set mesh event callbacks
-    // mesh.onReceive(&receivedCallback);
-    // mesh.onNewConnection(&newConnectionCallback);
-    // mesh.onChangedConnections(&changedConnectionCallback);
-    // mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
+    // Set mesh event callbacks
+    mesh.onReceive(&receivedCallback);
+    mesh.onNewConnection(&newConnectionCallback);
+    mesh.onChangedConnections(&changedConnectionCallback);
+    mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
 
-    // // Schedule the task to send messages every 10 seconds
-    // userScheduler.addTask(taskSendMessage);
-    // taskSendMessage.enable();
-
+    // Schedule the task to send messages every 10 seconds
+    userScheduler.addTask(taskSendMessage);
+    taskSendMessage.enable();
 }
 
-// Main loop to keep the mesh network and web server alive
 void loop() {
-    if (WiFi.status() != WL_CONNECTED) {
-        // If Wi-Fi is disconnected, stop the server and attempt reconnection
-        if (wifiConnected) {
-            Serial.println("Wi-Fi disconnected. Stopping web server...");
-            stopWebServer();
-            wifiConnected = false;
-        }
-        reconnectWiFi();  // Attempt reconnection
-    } else {
-        // If connected, handle web server requests normally
-        server.handleClient();
-    }
-    // mesh.update();  // Update mesh network status
-    // displayMessages();  // Continuously update the OLED display
+    // Mesh network task
+    mesh.update();
 }
