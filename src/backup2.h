@@ -271,6 +271,7 @@ void setup() {
     // Turn the display 
     displayMessages();
 
+}
 
 void loop() {
     // Keep the mesh network alive
